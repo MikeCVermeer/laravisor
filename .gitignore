@@ -1,0 +1,12 @@
+# Claude Code
+.claude/
+CLAUDE.md
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Reference implementation
+laramux-1.0.0/
