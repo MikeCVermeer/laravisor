@@ -7,7 +7,14 @@ import (
 	"github.com/mikecvermeer/laravisor/internal/config"
 	"github.com/mikecvermeer/laravisor/internal/log"
 	"github.com/mikecvermeer/laravisor/internal/proc"
+	"github.com/shirou/gopsutil/v3/process"
 )
+
+// ProcessStats holds CPU and memory stats for a process
+type ProcessStats struct {
+	CPUPercent float64
+	MemoryMB   float64
+}
 
 // CommandSource identifies where a command is running from
 type CommandSource int
@@ -45,6 +52,10 @@ type Model struct {
 	Manager      *proc.Manager
 	OutputChans  map[proc.ProcessID]chan proc.ProcessOutputMsg
 
+	// Process stats (CPU/Memory)
+	ProcessStats   map[proc.ProcessID]ProcessStats
+	statsTickCount int
+
 	// Log management
 	LogLines    []LogLine
 	MaxLogLines int
@@ -74,6 +85,7 @@ func New(workingDir string) Model {
 		ProcessOrder:  make([]proc.ProcessID, 0),
 		Manager:       proc.NewManager(),
 		OutputChans:   make(map[proc.ProcessID]chan proc.ProcessOutputMsg),
+		ProcessStats:  make(map[proc.ProcessID]ProcessStats),
 		LogLines:      make([]LogLine, 0),
 		MaxLogLines:   DefaultMaxLogLines,
 		WorkingDir:    workingDir,
@@ -175,5 +187,38 @@ func (m *Model) AddLogLine(line LogLine) {
 	}
 	if !found {
 		m.LogsTab.AvailableFiles = append(m.LogsTab.AvailableFiles, line.File)
+	}
+}
+
+// UpdateProcessStats updates CPU and memory stats for all running processes
+func (m *Model) UpdateProcessStats() {
+	for id, p := range m.Processes {
+		if p.PID == nil {
+			// Process not running, remove stats
+			delete(m.ProcessStats, id)
+			continue
+		}
+
+		proc, err := process.NewProcess(int32(*p.PID))
+		if err != nil {
+			delete(m.ProcessStats, id)
+			continue
+		}
+
+		cpuPercent, err := proc.CPUPercent()
+		if err != nil {
+			cpuPercent = 0
+		}
+
+		memInfo, err := proc.MemoryInfo()
+		var memMB float64
+		if err == nil && memInfo != nil {
+			memMB = float64(memInfo.RSS) / 1024 / 1024
+		}
+
+		m.ProcessStats[id] = ProcessStats{
+			CPUPercent: cpuPercent,
+			MemoryMB:   memMB,
+		}
 	}
 }

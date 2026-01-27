@@ -183,15 +183,16 @@ type ArtisanCommand struct {
 
 // ArtisanTabState holds state for the Artisan tab
 type ArtisanTabState struct {
-	SelectedCommand    int
-	InputBuffer        string
-	InputMode          bool
-	CommandOutput      []proc.OutputLine
-	OutputScrollOffset int
-	RunningCommand     *string
-	Commands           []ArtisanCommand
-	SearchQuery        string
-	SearchMode         bool
+	SelectedCommand     int
+	InputBuffer         string
+	InputMode           bool
+	CommandOutput       []proc.OutputLine
+	OutputScrollOffset  int
+	RunningCommand      *string
+	Commands            []ArtisanCommand
+	SearchQuery         string
+	SearchMode          bool
+	DetailsScrollOffset int
 }
 
 // MakeTabState holds state for the Make tab

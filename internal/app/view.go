@@ -113,7 +113,7 @@ func (m Model) renderProcessList(width, height int) string {
 		case proc.ProcessStatusRestarting:
 			statusStyle = ui.Styles.StatusRestarting
 			symbol = ui.Symbols.Restarting
-			actionHint = "restarting..."
+			actionHint = "please wait..."
 		case proc.ProcessStatusFailed:
 			statusStyle = ui.Styles.StatusFailed
 			symbol = ui.Symbols.Failed
@@ -137,12 +137,26 @@ func (m Model) renderProcessList(width, height int) string {
 		}
 
 		name := nameStyle.Render(fmt.Sprintf("%-12s", p.Config.DisplayName))
+
+		// CPU/Memory stats (only for running processes)
+		statsStr := ""
+		if p.Status == proc.ProcessStatusRunning {
+			if stats, ok := m.ProcessStats[id]; ok {
+				statsStr = ui.Styles.TextMuted.Render(fmt.Sprintf("%5.1f%% %5.0fMB  ", stats.CPUPercent, stats.MemoryMB))
+			} else {
+				statsStr = ui.Styles.TextMuted.Render("  ---   ---   ")
+			}
+		} else {
+			statsStr = ui.Styles.TextMuted.Render("              ")
+		}
+
 		hint := ui.Styles.TextMuted.Render(actionHint)
 
-		line := fmt.Sprintf("%s%s %s  %s",
+		line := fmt.Sprintf("%s%s %s %s%s",
 			selector,
 			statusStyle.Render(symbol),
 			name,
+			statsStr,
 			hint,
 		)
 
@@ -306,19 +320,48 @@ func (m Model) logLevelStyle(level LogLevel) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(color)
 }
 
-// renderArtisanTab renders the Artisan tab
+// renderArtisanTab renders the Artisan tab with split-panel layout
 func (m Model) renderArtisanTab(width, height int) string {
-	var lines []string
-
 	// Show output view if command is running or has output
 	if m.ArtisanTab.RunningCommand != nil || len(m.ArtisanTab.CommandOutput) > 0 {
 		return m.renderArtisanOutput(width, height)
 	}
 
+	// Calculate panel widths (40% left, 60% right)
+	leftWidth := width * 40 / 100
+	rightWidth := width - leftWidth - 3 // Account for border
+	panelHeight := height - 4           // Account for help line
+
+	// Render left panel (command list)
+	leftPanel := m.renderArtisanCommandList(leftWidth, panelHeight)
+
+	// Render right panel (command details)
+	rightPanel := m.renderArtisanCommandDetails(rightWidth, panelHeight)
+
+	// Join panels horizontally
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+
+	// Build help line
+	var help string
+	if m.ArtisanTab.SearchMode {
+		help = fmt.Sprintf("Search: %s█ (Enter/Esc to close)", m.ArtisanTab.SearchQuery)
+	} else if m.ArtisanTab.InputMode {
+		help = fmt.Sprintf("Args: %s█ (Enter to run, Esc to cancel)", m.ArtisanTab.InputBuffer)
+	} else {
+		help = "↑↓ navigate • Ctrl+↑↓ scroll details • Enter run • i input • f favorite • / search"
+	}
+
+	return panels + "\n" + ui.Styles.HelpDesc.Render(help)
+}
+
+// renderArtisanCommandList renders the left panel with the command list
+func (m Model) renderArtisanCommandList(width, height int) string {
+	var lines []string
+
 	// Build title with search info
-	title := "Artisan Commands"
+	title := "Commands"
 	if m.ArtisanTab.SearchQuery != "" {
-		title = fmt.Sprintf("Artisan Commands [Search: %s]", m.ArtisanTab.SearchQuery)
+		title = fmt.Sprintf("Commands [%s]", m.ArtisanTab.SearchQuery)
 	}
 	lines = append(lines, ui.Styles.Title.Render(title))
 	lines = append(lines, "")
@@ -328,13 +371,13 @@ func (m Model) renderArtisanTab(width, height int) string {
 		if m.ArtisanTab.SearchQuery != "" {
 			lines = append(lines, ui.Styles.TextMuted.Render("No matching commands"))
 		} else {
-			lines = append(lines, ui.Styles.TextMuted.Render("Discovering commands..."))
+			lines = append(lines, ui.Styles.TextMuted.Render("Discovering..."))
 		}
 	} else {
-		maxLines := height - 5
+		maxLines := height - 4
 		for i, cmd := range commands {
 			if i >= maxLines {
-				lines = append(lines, ui.Styles.TextMuted.Render(fmt.Sprintf("... and %d more", len(commands)-maxLines)))
+				lines = append(lines, ui.Styles.TextMuted.Render(fmt.Sprintf("... +%d more", len(commands)-maxLines)))
 				break
 			}
 
@@ -343,24 +386,142 @@ func (m Model) renderArtisanTab(width, height int) string {
 				selector = ui.Styles.StatusRunning.Render(ui.Symbols.Selector + " ")
 			}
 
-			line := fmt.Sprintf("%s%s - %s", selector, cmd.Name, cmd.Description)
+			// Show favorite star indicator
+			favoriteIndicator := ""
+			if m.isArtisanFavorite(cmd.Name) {
+				favoriteIndicator = ui.Styles.StatusRestarting.Render(ui.Symbols.Favorite) + " "
+			}
+
+			// Truncate command name to fit
+			cmdName := cmd.Name
+			maxNameLen := width - 6
+			if len(cmdName) > maxNameLen {
+				cmdName = cmdName[:maxNameLen-3] + "..."
+			}
+
+			line := fmt.Sprintf("%s%s%s", selector, favoriteIndicator, cmdName)
 			if i == m.ArtisanTab.SelectedCommand {
-				line = ui.Styles.Selected.Width(width).Render(line)
+				line = ui.Styles.Selected.Width(width - 2).Render(line)
 			}
 			lines = append(lines, line)
 		}
 	}
 
-	lines = append(lines, "")
-	help := "↑↓ navigate • Enter run • i input args • / search"
-	if m.ArtisanTab.SearchMode {
-		help = fmt.Sprintf("Search: %s█ (Enter/Esc to close)", m.ArtisanTab.SearchQuery)
-	} else if m.ArtisanTab.InputMode {
-		help = fmt.Sprintf("Args: %s█ (Enter to run, Esc to cancel)", m.ArtisanTab.InputBuffer)
+	// Pad to fill height
+	for len(lines) < height {
+		lines = append(lines, "")
 	}
-	lines = append(lines, ui.Styles.HelpDesc.Render(help))
 
-	return strings.Join(lines, "\n")
+	content := strings.Join(lines, "\n")
+	return ui.BorderedBox("", true).Width(width).Height(height).Render(content)
+}
+
+// renderArtisanCommandDetails renders the right panel with command details
+func (m Model) renderArtisanCommandDetails(width, height int) string {
+	commands := m.filteredArtisanCommands()
+	if len(commands) == 0 || m.ArtisanTab.SelectedCommand >= len(commands) {
+		return ui.BorderedBox("", false).Width(width).Height(height).Render(
+			ui.Styles.TextMuted.Render("Select a command to see details"),
+		)
+	}
+
+	cmd := commands[m.ArtisanTab.SelectedCommand]
+	var detailLines []string
+
+	// Command name (bold)
+	detailLines = append(detailLines, ui.Styles.Title.Render("php artisan "+cmd.Name))
+	detailLines = append(detailLines, "")
+
+	// Description (word-wrapped)
+	if cmd.Description != "" {
+		detailLines = append(detailLines, ui.Styles.HelpDesc.Render("Description:"))
+		wrapped := m.wrapText(cmd.Description, width-4)
+		for _, line := range wrapped {
+			detailLines = append(detailLines, "  "+line)
+		}
+		detailLines = append(detailLines, "")
+	}
+
+	// Arguments section
+	if len(cmd.Arguments) > 0 {
+		detailLines = append(detailLines, ui.Styles.HelpDesc.Render("Arguments:"))
+		for _, arg := range cmd.Arguments {
+			detailLines = append(detailLines, "  "+arg)
+		}
+		detailLines = append(detailLines, "")
+	}
+
+	// Options section (filter out common options)
+	skipOptions := map[string]bool{
+		"--help": true, "-h": true,
+		"--quiet": true, "-q": true,
+		"--verbose": true, "-v": true, "-vv": true, "-vvv": true,
+		"--version": true, "-V": true,
+		"--ansi": true, "--no-ansi": true,
+		"--no-interaction": true, "-n": true,
+		"--env": true,
+	}
+	var filteredOptions []string
+	for _, opt := range cmd.Options {
+		// Extract the option name (first word)
+		optName := strings.Fields(opt)
+		if len(optName) > 0 && !skipOptions[optName[0]] {
+			filteredOptions = append(filteredOptions, opt)
+		}
+	}
+
+	if len(filteredOptions) > 0 {
+		detailLines = append(detailLines, ui.Styles.HelpDesc.Render("Options:"))
+		for _, opt := range filteredOptions {
+			detailLines = append(detailLines, "  "+opt)
+		}
+	}
+
+	// Apply scroll offset
+	if m.ArtisanTab.DetailsScrollOffset > 0 && m.ArtisanTab.DetailsScrollOffset < len(detailLines) {
+		detailLines = detailLines[m.ArtisanTab.DetailsScrollOffset:]
+	}
+
+	// Truncate to fit height
+	maxLines := height - 2
+	if len(detailLines) > maxLines {
+		detailLines = detailLines[:maxLines]
+	}
+
+	// Pad to fill height
+	for len(detailLines) < maxLines {
+		detailLines = append(detailLines, "")
+	}
+
+	content := strings.Join(detailLines, "\n")
+	return ui.BorderedBox("", false).Width(width).Height(height).Render(content)
+}
+
+// wrapText wraps text to fit within a given width
+func (m Model) wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{text}
+	}
+
+	var lines []string
+	words := strings.Fields(text)
+	var currentLine string
+
+	for _, word := range words {
+		if currentLine == "" {
+			currentLine = word
+		} else if len(currentLine)+1+len(word) <= maxWidth {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, currentLine)
+			currentLine = word
+		}
+	}
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+
+	return lines
 }
 
 // renderArtisanOutput renders the command output view
@@ -403,7 +564,7 @@ func (m Model) renderArtisanOutput(width, height int) string {
 	lines = append(lines, "")
 	var help string
 	if m.ArtisanTab.RunningCommand != nil {
-		help = "x stop • ↑↓ scroll"
+		help = "Esc cancel • ↑↓ scroll"
 	} else {
 		help = "c clear • Esc back to list"
 	}
@@ -449,7 +610,13 @@ func (m Model) renderMakeTab(width, height int) string {
 				selector = ui.Styles.StatusRunning.Render(ui.Symbols.Selector + " ")
 			}
 
-			line := fmt.Sprintf("%s%s - %s", selector, cmd.Name, cmd.Description)
+			// Show favorite star indicator
+			favoriteIndicator := ""
+			if m.isMakeFavorite(cmd.Name) {
+				favoriteIndicator = ui.Styles.StatusRestarting.Render(ui.Symbols.Favorite) + " "
+			}
+
+			line := fmt.Sprintf("%s%s%s - %s", selector, favoriteIndicator, cmd.Name, cmd.Description)
 			if i == m.MakeTab.SelectedCommand {
 				line = ui.Styles.Selected.Width(width).Render(line)
 			}
@@ -458,7 +625,7 @@ func (m Model) renderMakeTab(width, height int) string {
 	}
 
 	lines = append(lines, "")
-	help := "↑↓ navigate • Enter/i input name • / search"
+	help := "↑↓ navigate • Enter/i input name • f favorite • / search"
 	if m.MakeTab.SearchMode {
 		help = fmt.Sprintf("Search: %s█ (Enter/Esc to close)", m.MakeTab.SearchQuery)
 	} else if m.MakeTab.InputMode {
@@ -509,7 +676,7 @@ func (m Model) renderMakeOutput(width, height int) string {
 	lines = append(lines, "")
 	var help string
 	if m.MakeTab.RunningCommand != nil {
-		help = "x stop • ↑↓ scroll"
+		help = "Esc cancel • ↑↓ scroll"
 	} else {
 		help = "c clear • Esc back to list"
 	}
@@ -608,7 +775,7 @@ func (m Model) renderQualityOutput(width, height int) string {
 	lines = append(lines, "")
 	var help string
 	if m.QualityTab.RunningCommand != nil {
-		help = "x stop • ↑↓ scroll"
+		help = "Esc cancel • ↑↓ scroll"
 	} else {
 		help = "c clear • Esc back to list"
 	}

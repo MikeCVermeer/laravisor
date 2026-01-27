@@ -41,6 +41,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// No new entries
 			}
 		}
+
+		// Update process stats every 20 ticks (2 seconds at 100ms interval)
+		m.statsTickCount++
+		if m.statsTickCount >= 20 {
+			m.statsTickCount = 0
+			m.UpdateProcessStats()
+		}
+
 		return m, tickCmd()
 
 	case proc.ProcessOutputMsg:
@@ -51,10 +59,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				IsStderr: msg.IsStderr,
 				Time:     time.Now(),
 			})
-		}
-		// Continue listening for output
-		if ch, ok := m.OutputChans[msg.ID]; ok {
-			return m, listenForOutput(msg.ID, ch)
+			// Continue listening for output only if process is still running
+			if p.Status == proc.ProcessStatusRunning {
+				if ch, ok := m.OutputChans[msg.ID]; ok {
+					return m, listenForOutput(msg.ID, ch)
+				}
+			}
 		}
 		return m, nil
 
@@ -81,7 +91,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ProcessAutoRestartMsg:
 		// Auto-restart a failed process
 		if p, ok := m.Processes[msg.ID]; ok && p.Status == proc.ProcessStatusRestarting {
-			return m, m.Manager.Spawn(msg.ID)
+			return m, m.Manager.Spawn(msg.ID, m.OutputChans[msg.ID])
 		}
 		return m, nil
 
@@ -252,7 +262,7 @@ func (m Model) updateProcessesTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Start selected process
 		id := m.SelectedProcessID()
 		if id != "" && !m.Manager.IsRunning(id) {
-			return m, m.Manager.Spawn(id)
+			return m, m.Manager.Spawn(id, m.OutputChans[id])
 		}
 	case "x":
 		// Stop selected process
@@ -267,7 +277,7 @@ func (m Model) updateProcessesTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Restart selected process
 		id := m.SelectedProcessID()
 		if id != "" {
-			return m, m.Manager.Restart(id)
+			return m, m.Manager.Restart(id, m.OutputChans[id])
 		}
 	case "R":
 		// Restart all processes
@@ -290,7 +300,7 @@ func (m *Model) startAllProcesses() tea.Cmd {
 	var cmds []tea.Cmd
 	for id := range m.Processes {
 		if !m.Manager.IsRunning(id) {
-			cmds = append(cmds, m.Manager.Spawn(id))
+			cmds = append(cmds, m.Manager.Spawn(id, m.OutputChans[id]))
 		}
 	}
 	return tea.Batch(cmds...)
@@ -300,7 +310,7 @@ func (m *Model) startAllProcesses() tea.Cmd {
 func (m *Model) restartAllProcesses() tea.Cmd {
 	var cmds []tea.Cmd
 	for id := range m.Processes {
-		cmds = append(cmds, m.Manager.Restart(id))
+		cmds = append(cmds, m.Manager.Restart(id, m.OutputChans[id]))
 	}
 	return tea.Batch(cmds...)
 }
@@ -452,12 +462,22 @@ func (m Model) updateArtisanTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		filtered := m.filteredArtisanCommands()
 		if m.ArtisanTab.SelectedCommand > 0 && m.ArtisanTab.SelectedCommand < len(filtered) {
 			m.ArtisanTab.SelectedCommand--
+			m.ArtisanTab.DetailsScrollOffset = 0 // Reset scroll on selection change
 		}
 	case "down", "j":
 		filtered := m.filteredArtisanCommands()
 		if m.ArtisanTab.SelectedCommand < len(filtered)-1 {
 			m.ArtisanTab.SelectedCommand++
+			m.ArtisanTab.DetailsScrollOffset = 0 // Reset scroll on selection change
 		}
+	case "ctrl+up", "ctrl+k":
+		// Scroll details panel up
+		if m.ArtisanTab.DetailsScrollOffset > 0 {
+			m.ArtisanTab.DetailsScrollOffset--
+		}
+	case "ctrl+down", "ctrl+j":
+		// Scroll details panel down
+		m.ArtisanTab.DetailsScrollOffset++
 	case "/":
 		// Enter search mode
 		m.ArtisanTab.SearchMode = true
@@ -479,9 +499,28 @@ func (m Model) updateArtisanTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ArtisanTab.RunningCommand = nil
 			m.CommandSource = CommandSourceNone
 		}
+	case "f":
+		// Toggle favorite for selected command
+		filtered := m.filteredArtisanCommands()
+		if m.ArtisanTab.SelectedCommand < len(filtered) {
+			cmdName := filtered[m.ArtisanTab.SelectedCommand].Name
+			m.toggleArtisanFavorite(cmdName)
+			if m.Config != nil {
+				config.Save(m.WorkingDir, m.Config)
+			}
+		}
 	case "esc":
+		// First check if a command is running - cancel it
+		if m.ArtisanTab.RunningCommand != nil {
+			if m.CommandRunner != nil && m.CommandRunner.IsRunning() {
+				m.CommandRunner.Stop()
+			}
+			m.ArtisanTab.RunningCommand = nil
+			m.CommandSource = CommandSourceNone
+			return m, nil
+		}
 		// If viewing output, go back to list
-		if len(m.ArtisanTab.CommandOutput) > 0 && m.ArtisanTab.RunningCommand == nil {
+		if len(m.ArtisanTab.CommandOutput) > 0 {
 			m.ArtisanTab.CommandOutput = nil
 		}
 		// Clear search
@@ -490,20 +529,64 @@ func (m Model) updateArtisanTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// filteredArtisanCommands returns commands matching the search query
-func (m Model) filteredArtisanCommands() []ArtisanCommand {
-	if m.ArtisanTab.SearchQuery == "" {
-		return m.ArtisanTab.Commands
+// toggleArtisanFavorite toggles a command as a favorite
+func (m *Model) toggleArtisanFavorite(name string) {
+	if m.Config == nil {
+		m.Config = config.NewDefaultConfig()
 	}
-	var result []ArtisanCommand
-	query := strings.ToLower(m.ArtisanTab.SearchQuery)
-	for _, cmd := range m.ArtisanTab.Commands {
-		if strings.Contains(strings.ToLower(cmd.Name), query) ||
-			strings.Contains(strings.ToLower(cmd.Description), query) {
-			result = append(result, cmd)
+	// Check if already a favorite
+	for i, fav := range m.Config.Artisan.Favorites {
+		if fav == name {
+			// Remove from favorites
+			m.Config.Artisan.Favorites = append(m.Config.Artisan.Favorites[:i], m.Config.Artisan.Favorites[i+1:]...)
+			return
 		}
 	}
-	return result
+	// Add to favorites
+	m.Config.Artisan.Favorites = append(m.Config.Artisan.Favorites, name)
+}
+
+// isArtisanFavorite checks if a command is a favorite
+func (m *Model) isArtisanFavorite(name string) bool {
+	if m.Config == nil {
+		return false
+	}
+	for _, fav := range m.Config.Artisan.Favorites {
+		if fav == name {
+			return true
+		}
+	}
+	return false
+}
+
+// filteredArtisanCommands returns commands matching the search query, sorted with favorites first
+func (m Model) filteredArtisanCommands() []ArtisanCommand {
+	var commands []ArtisanCommand
+
+	if m.ArtisanTab.SearchQuery == "" {
+		commands = m.ArtisanTab.Commands
+	} else {
+		query := strings.ToLower(m.ArtisanTab.SearchQuery)
+		for _, cmd := range m.ArtisanTab.Commands {
+			if strings.Contains(strings.ToLower(cmd.Name), query) ||
+				strings.Contains(strings.ToLower(cmd.Description), query) {
+				commands = append(commands, cmd)
+			}
+		}
+	}
+
+	// Sort favorites first, then alphabetically
+	var favorites []ArtisanCommand
+	var regular []ArtisanCommand
+	for _, cmd := range commands {
+		if m.isArtisanFavorite(cmd.Name) {
+			favorites = append(favorites, cmd)
+		} else {
+			regular = append(regular, cmd)
+		}
+	}
+
+	return append(favorites, regular...)
 }
 
 // runArtisanCommand runs the selected artisan command
@@ -607,9 +690,28 @@ func (m Model) updateMakeTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.MakeTab.RunningCommand = nil
 			m.CommandSource = CommandSourceNone
 		}
+	case "f":
+		// Toggle favorite for selected command
+		filtered := m.filteredMakeCommands()
+		if m.MakeTab.SelectedCommand < len(filtered) {
+			cmdName := filtered[m.MakeTab.SelectedCommand].Name
+			m.toggleMakeFavorite(cmdName)
+			if m.Config != nil {
+				config.Save(m.WorkingDir, m.Config)
+			}
+		}
 	case "esc":
+		// First check if a command is running - cancel it
+		if m.MakeTab.RunningCommand != nil {
+			if m.CommandRunner != nil && m.CommandRunner.IsRunning() {
+				m.CommandRunner.Stop()
+			}
+			m.MakeTab.RunningCommand = nil
+			m.CommandSource = CommandSourceNone
+			return m, nil
+		}
 		// If viewing output, go back to list
-		if len(m.MakeTab.CommandOutput) > 0 && m.MakeTab.RunningCommand == nil {
+		if len(m.MakeTab.CommandOutput) > 0 {
 			m.MakeTab.CommandOutput = nil
 		}
 		// Clear search
@@ -618,20 +720,64 @@ func (m Model) updateMakeTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// filteredMakeCommands returns commands matching the search query
-func (m Model) filteredMakeCommands() []ArtisanCommand {
-	if m.MakeTab.SearchQuery == "" {
-		return m.MakeTab.Commands
+// toggleMakeFavorite toggles a command as a favorite
+func (m *Model) toggleMakeFavorite(name string) {
+	if m.Config == nil {
+		m.Config = config.NewDefaultConfig()
 	}
-	var result []ArtisanCommand
-	query := strings.ToLower(m.MakeTab.SearchQuery)
-	for _, cmd := range m.MakeTab.Commands {
-		if strings.Contains(strings.ToLower(cmd.Name), query) ||
-			strings.Contains(strings.ToLower(cmd.Description), query) {
-			result = append(result, cmd)
+	// Check if already a favorite
+	for i, fav := range m.Config.Make.Favorites {
+		if fav == name {
+			// Remove from favorites
+			m.Config.Make.Favorites = append(m.Config.Make.Favorites[:i], m.Config.Make.Favorites[i+1:]...)
+			return
 		}
 	}
-	return result
+	// Add to favorites
+	m.Config.Make.Favorites = append(m.Config.Make.Favorites, name)
+}
+
+// isMakeFavorite checks if a command is a favorite
+func (m *Model) isMakeFavorite(name string) bool {
+	if m.Config == nil {
+		return false
+	}
+	for _, fav := range m.Config.Make.Favorites {
+		if fav == name {
+			return true
+		}
+	}
+	return false
+}
+
+// filteredMakeCommands returns commands matching the search query, sorted with favorites first
+func (m Model) filteredMakeCommands() []ArtisanCommand {
+	var commands []ArtisanCommand
+
+	if m.MakeTab.SearchQuery == "" {
+		commands = m.MakeTab.Commands
+	} else {
+		query := strings.ToLower(m.MakeTab.SearchQuery)
+		for _, cmd := range m.MakeTab.Commands {
+			if strings.Contains(strings.ToLower(cmd.Name), query) ||
+				strings.Contains(strings.ToLower(cmd.Description), query) {
+				commands = append(commands, cmd)
+			}
+		}
+	}
+
+	// Sort favorites first, then alphabetically
+	var favorites []ArtisanCommand
+	var regular []ArtisanCommand
+	for _, cmd := range commands {
+		if m.isMakeFavorite(cmd.Name) {
+			favorites = append(favorites, cmd)
+		} else {
+			regular = append(regular, cmd)
+		}
+	}
+
+	return append(favorites, regular...)
 }
 
 // runMakeCommand runs the selected make command
@@ -724,8 +870,17 @@ func (m Model) updateQualityTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.CommandSource = CommandSourceNone
 		}
 	case "esc":
+		// First check if a command is running - cancel it
+		if m.QualityTab.RunningCommand != nil {
+			if m.CommandRunner != nil && m.CommandRunner.IsRunning() {
+				m.CommandRunner.Stop()
+			}
+			m.QualityTab.RunningCommand = nil
+			m.CommandSource = CommandSourceNone
+			return m, nil
+		}
 		// If viewing output, go back to list
-		if len(m.QualityTab.CommandOutput) > 0 && m.QualityTab.RunningCommand == nil {
+		if len(m.QualityTab.CommandOutput) > 0 {
 			m.QualityTab.CommandOutput = nil
 		}
 	}

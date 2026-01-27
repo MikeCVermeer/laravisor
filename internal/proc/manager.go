@@ -65,7 +65,8 @@ func (m *Manager) Register(proc *Process) {
 }
 
 // Spawn starts a process and returns a command to listen for output
-func (m *Manager) Spawn(id ProcessID) tea.Cmd {
+// The outputCh parameter is the channel that will receive all process output
+func (m *Manager) Spawn(id ProcessID, outputCh chan ProcessOutputMsg) tea.Cmd {
 	m.mu.Lock()
 	mp, exists := m.processes[id]
 	if !exists {
@@ -78,6 +79,16 @@ func (m *Manager) Spawn(id ProcessID) tea.Cmd {
 
 	// Kill existing process if running
 	m.Kill(id)
+
+	// Drain the output channel before starting
+	for {
+		select {
+		case <-outputCh:
+		default:
+			goto drained
+		}
+	}
+drained:
 
 	// Create context for this process
 	ctx, cancel := context.WithCancel(m.ctx)
@@ -136,9 +147,6 @@ func (m *Manager) Spawn(id ProcessID) tea.Cmd {
 	proc.BackoffSeconds = 1
 	m.mu.Unlock()
 
-	// Create channels for output
-	outputCh := make(chan ProcessOutputMsg, 100)
-
 	// Read stdout in goroutine
 	go func() {
 		scanner := bufio.NewScanner(stdout)
@@ -192,12 +200,11 @@ func (m *Manager) Spawn(id ProcessID) tea.Cmd {
 				exitCode = &zero
 			}
 
-			// Send exit message through channel
+			// Send exit message through channel (non-blocking)
 			select {
 			case outputCh <- ProcessOutputMsg{ID: id, Line: "Process exited", IsStderr: false}:
 			default:
 			}
-			close(outputCh)
 
 			// Store exit code for restart decision
 			mp.Process.lastExitCode = exitCode
@@ -297,10 +304,10 @@ func (m *Manager) KillAll() {
 }
 
 // Restart stops and starts a process
-func (m *Manager) Restart(id ProcessID) tea.Cmd {
+func (m *Manager) Restart(id ProcessID, outputCh chan ProcessOutputMsg) tea.Cmd {
 	m.Kill(id)
 	time.Sleep(500 * time.Millisecond)
-	return m.Spawn(id)
+	return m.Spawn(id, outputCh)
 }
 
 // IsRunning checks if a process is running
