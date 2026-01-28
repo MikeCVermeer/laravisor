@@ -54,22 +54,18 @@ changelog:
       - Merge pull request
       - Merge branch
 
-brews:
+homebrew_casks:
   - repository:
       owner: mikecvermeer
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: "https://github.com/mikecvermeer/laravisor"
     description: "TUI for managing Laravel development processes"
     license: "MIT"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    test: |
-      system "#{bin}/laravisor", "--version"
-    install: |
-      bin.install "laravisor"
 
 release:
   github:
