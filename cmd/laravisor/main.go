@@ -11,7 +11,19 @@ import (
 	"github.com/mikecvermeer/laravisor/internal/log"
 )
 
+// Version information set by goreleaser ldflags
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	// Handle --version flag
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("laravisor %s (%s) built on %s\n", version, commit, date)
+		os.Exit(0)
+	}
 	// Get working directory
 	workingDir, err := os.Getwd()
 	if err != nil {
