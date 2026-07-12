@@ -21,7 +21,7 @@ Laravisor discovers the processes, commands, quality tools, and logs around a La
 - Detects common testing and quality tools from Composer and `package.json`.
 - Supports project-specific overrides and custom processes through `.laravisor.json`.
 - Uses graceful `SIGTERM` shutdown before a bounded `SIGKILL` fallback.
-- Supports `never`, `on_failure`, and `always` restart policies with capped exponential backoff.
+- Supports `never`, `on_failure`, and `always` restart policies for default-process overrides, with capped exponential backoff.
 
 ## Install
 
@@ -91,19 +91,15 @@ Laravisor works without a configuration file. Add `.laravisor.json` to the Larav
       "command": "php",
       "args": ["artisan", "schedule:work"],
       "hotkey": "d",
-      "enabled": true,
-      "restart_policy": "on_failure"
+      "enabled": true
     }
   ],
   "quality": {
-    "disabled_tools": [],
-    "custom_tools": [],
-    "default_args": {}
+    "disabled_tools": []
   },
   "logs": {
     "max_lines": 2000,
-    "files": [],
-    "default_filter": "warning"
+    "files": []
   },
   "artisan": {
     "favorites": ["about", "route:list"]
