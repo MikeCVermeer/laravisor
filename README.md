@@ -21,7 +21,6 @@ Laravisor discovers the processes, commands, quality tools, and logs around a La
 - Detects common testing and quality tools from Composer and `package.json`.
 - Supports project-specific overrides and custom processes through `.laravisor.json`.
 - Uses graceful `SIGTERM` shutdown before a bounded `SIGKILL` fallback.
-- Supports `never`, `on_failure`, and `always` restart policies for default-process overrides, with capped exponential backoff.
 
 ## Install
 
@@ -80,8 +79,7 @@ Laravisor works without a configuration file. Add `.laravisor.json` to the Larav
   "overrides": {
     "vite": {
       "command": "npm",
-      "args": ["run", "dev"],
-      "restart_policy": "on_failure"
+      "args": ["run", "dev"]
     }
   },
   "custom": [
@@ -145,6 +143,7 @@ CI also verifies that `go.mod` and `go.sum` remain tidy and that the GoReleaser 
 - It manages local processes only and is not a container orchestrator or deployment tool.
 - Commands run with the current user's privileges, so review project scripts before executing them.
 - Terminal rendering depends on the capabilities of the active terminal emulator.
+- Automatic restart policies are represented in the current configuration model but are not yet connected end to end to process-exit events.
 
 ## License
 
