@@ -16,7 +16,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Verify module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
       - name: Build
         run: go build -v ./...
@@ -38,7 +44,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
+          check-latest: true
 
       - name: Check GoReleaser config
         uses: goreleaser/goreleaser-action@v6
