@@ -90,7 +90,6 @@ Laravisor works without a configuration file. Add `.laravisor.json` to the Larav
       "display_name": "Scheduler",
       "command": "php",
       "args": ["artisan", "schedule:work"],
-      "hotkey": "d",
       "enabled": true
     }
   ],
